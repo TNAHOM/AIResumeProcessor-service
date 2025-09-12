@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic[email]
+python-dotenv
+psycopg2-binary
+boto3
+google-generativeai
+pydantic_settings
