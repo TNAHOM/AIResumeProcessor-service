@@ -1,7 +1,18 @@
-from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends,
+    UploadFile,
+    File,
+    BackgroundTasks,
+    HTTPException,
+)
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.schemas.resume import ResumeCreateResponse, ResumeStatusResponse
+from app.schemas.resume import (
+    ResumeCreateResponse,
+    ResumeStatusResponse,
+    ResumeUploadForm,
+)
 from app.services import resume_service
 from app.db.models import Application
 
@@ -12,9 +23,12 @@ router = APIRouter(prefix="/resumes", tags=["Resumes"])
 def upload_resume(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    form_data: ResumeUploadForm = Depends(ResumeUploadForm.as_form),
     db: Session = Depends(get_db),
 ):
-    application = resume_service.create_upload_job(db, file, background_tasks)
+    application = resume_service.create_upload_job(
+        db, file, background_tasks, form_data
+    )
     return {
         "application_id": application.id,
         "status": application.status,

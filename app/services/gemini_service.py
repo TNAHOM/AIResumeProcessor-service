@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Type
 
 from google import genai
 from google.genai import types
@@ -16,6 +16,87 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _combine_grouped_resume_text(raw_resume_json: Dict[str, List[str]]) -> str:
+    """Combine grouped resume JSON (page->lines) into a single text blob in numeric key order.
+
+    Raises if keys are not numeric; mirrors prior behavior.
+    """
+    try:
+        return "\n".join(
+            line
+            for key in sorted(raw_resume_json.keys(), key=int)
+            for line in raw_resume_json[key]
+        )
+    except Exception:
+        logger.exception("Failed to combine raw resume text")
+        raise
+
+
+def generate_json_with_gemini(
+    *,
+    prompt: str,
+    response_schema: Type[Any],
+    system_instruction: Optional[str] = None,
+    temperature: float = 0.2,
+    model: str = "gemini-2.5-flash",
+) -> Dict[str, Any]:
+    """Generic helper to call Gemini and return a JSON-like dict conforming to response_schema.
+
+    - prompt: full text prompt to send as contents
+    - response_schema: Pydantic model (or schema supported by SDK)
+    - system_instruction: optional system role instruction
+    - temperature: sampling temperature
+    - model: model name
+
+    Returns a Python dict matching the schema. If SDK returns a parsed Pydantic object,
+    it's converted to a dict.
+    """
+    GEMINI_API_KEY = settings.GEMINI_API_KEY
+    if not GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY not set in environment")
+        raise ValueError("GEMINI_API_KEY environment variable not set.")
+
+    client = genai.Client()
+
+    response = None
+    try:
+        logger.info("Calling Gemini model=%s with typed response", model)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=response_schema,
+                temperature=temperature,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+
+        if hasattr(response, "parsed") and response.parsed is not None:
+            parsed = response.parsed
+            # Convert Pydantic (v2) model to dict when possible
+            if hasattr(parsed, "model_dump"):
+                return parsed.model_dump()  # type: ignore[no-any-return]
+            if hasattr(parsed, "dict"):
+                return parsed.dict()  # type: ignore[no-any-return]
+            return parsed  # type: ignore[no-any-return]
+
+        # Fallback to raw JSON parse
+        return json.loads(getattr(response, "text", "{}"))
+
+    except Exception as e:
+        logger.exception("Gemini call failed")
+        raw_response = (
+            getattr(response, "text", "N/A") if response is not None else "N/A"
+        )
+        return {
+            "error": "Gemini call failed",
+            "details": str(e),
+            "raw_response": raw_response,
+        }
 
 
 def structure_and_normalize_resume_with_gemini(
@@ -33,24 +114,8 @@ def structure_and_normalize_resume_with_gemini(
 
     Returns: JSON-like dict with parsed schema, or an error dict with keys: error, details, raw_response
     """
-    GEMINI_API_KEY = settings.GEMINI_API_KEY
-    if not GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY not set in environment and no api_key provided")
-        raise ValueError("GEMINI_API_KEY environment variable not set.")
-
-    # Instantiate client via factory (keeps core logic unchanged)
-    client = genai.Client()
-
-    # 2. Prepare the resume text (unchanged combining logic)
-    try:
-        combined_resume_text = "\n".join(
-            line
-            for key in sorted(raw_resume_json.keys(), key=int)
-            for line in raw_resume_json[key]
-        )
-    except Exception:
-        logger.exception("Failed to combine raw resume text")
-        raise
+    # 2. Prepare the resume text (unchanged combining logic, now via helper)
+    combined_resume_text = _combine_grouped_resume_text(raw_resume_json)
 
     # 3. Build instructions / prompt (kept intact)
     context_instruction = """
@@ -98,46 +163,33 @@ HARD RULES (CRITICAL - DO NOT BREAK):
 6. **Education**: The output MUST include an `education` array. Each entry should contain at least
     `degree` and `institution` when available. Do not invent degrees or
     institutions; if missing, use an empty string.
+
+7. **Skills and Technologies (include soft skills)**: Populate `skillsAndTechnologies` with BOTH hard skills
+     (e.g., programming languages, frameworks, cloud platforms) and soft skills explicitly mentioned or strongly
+     implied by the resume text.
+     - Examples of soft skills to capture when present: leadership, communication, teamwork, collaboration,
+         stakeholder management, presentation, mentoring, coaching, conflict resolution, adaptability, problem solving,
+         time management, prioritization, negotiation, strategic thinking, product sense, cross-functional collaboration.
+     - Derive soft skills from action phrases when clearly implied (e.g., "led a team" -> leadership; "presented to executives" -> presentation; "managed stakeholders" -> stakeholder management).
+     - Normalize names to a canonical singular form where reasonable (e.g., "communications" -> "communication").
+     - Deduplicate entries and keep concise, human-readable names.
+     - DO NOT invent skills: include only those that are explicitly stated or strongly implied by responsibilities/achievements in the text.
 """
 
     prompt = f"{context_instruction}\n{hard_rules}\nRESUME_TEXT:\n---\n{combined_resume_text}\n---"
 
-    response = None
-    try:
-        logger.info("Sending resume to Gemini model for parsing")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction="You are a meticulous and detail-oriented resume parsing AI(also you are a senior recruiter).",
-                response_mime_type="application/json",
-                response_schema=ResumeOutput,
-                temperature=0.1,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
-        )
+    system_instruction = "You are a meticulous and detail-oriented resume parsing AI(also you are a senior recruiter)."
 
-        # The SDK may return structured result. Prefer parsed when available.
-        if hasattr(response, "parsed") and response.parsed is not None:
-            logger.info("Received parsed response from Gemini client")
-            return response.parsed  # pyright: ignore[reportReturnType]
-        else:
-            # fallback: parse text if response.text is JSON
-            logger.info(
-                "Parsed attribute missing; falling back to response.text JSON parse"
-            )
-            return json.loads(response.text)  # pyright: ignore[reportArgumentType]
+    # Delegate to the generic helper
+    result = generate_json_with_gemini(
+        prompt=prompt,
+        response_schema=ResumeOutput,
+        system_instruction=system_instruction,
+        temperature=0.2,
+    )
 
-    except Exception as e:
-        logger.exception("An error occurred during Gemini API call or processing")
-        raw_response = (
-            getattr(response, "text", "N/A") if response is not None else "N/A"
-        )
-        return {
-            "error": "Failed to process resume with Gemini",
-            "details": str(e),
-            "raw_response": raw_response,
-        }
+    # Consistent return contract
+    return result
 
 
 async def structure_and_normalize_resume_with_gemini_async(
@@ -154,4 +206,73 @@ async def structure_and_normalize_resume_with_gemini_async(
     return await loop.run_in_executor(
         None,
         lambda: structure_and_normalize_resume_with_gemini(raw_resume_json),
+    )
+
+
+def evaluate_resume_against_job_post(
+    *,
+    resume_text: dict,
+    job_post: dict,
+    temperature: float = 0.2,
+    model: str = "gemini-2.5-flash",
+) -> Dict[str, Any]:
+    """Use Gemini to generate ATS-style strengths and weaknesses, given resume and JD text.
+
+    Contract:
+    - Inputs: resume_text (string), job_post (string)
+    - Output: dict matching ATSEvaluation schema: {"strengths": [...], "weaknesses": [...], "score": float}
+    - No numeric scoring is performed here.
+    """
+
+    system_prompt = (
+        "You are an ATS (Applicant Tracking System) evaluation assistant.\n"
+        "Your task is to analyze how well an applicant’s resume matches a job posting.\n"
+        "The system has already calculated numeric similarity scores.\n"
+        "You DO NOT calculate scores. Instead, you must generate:\n"
+        '- "strengths": reasons why the applicant is a good fit \n'
+        '- "weaknesses": reasons why the applicant may not be a good fit\n\n'
+        '- "score": a numeric score from 1 to 10(float number) indicating overall fit using the job post information and the applicant resume (higher is better)\n\n'
+        "Respond strictly in this JSON format:\n\n"
+        '{\n  "strengths": [list of short bullet strings],\n  "weaknesses": [list of short bullet strings],\n  "score": numeric score float number\n}\n'
+    )
+
+    user_prompt = (
+        f"JOB_POST:\n---\n{job_post}\n---\n\n"
+        f"RESUME:\n---\n{resume_text}\n---\n"
+        "Return only valid JSON per the required format."
+    )
+
+    # Local import to avoid module-level coupling issues
+    from app.schemas.ats_evaluation import ATSEvaluation
+
+    result = generate_json_with_gemini(
+        prompt=user_prompt,
+        response_schema=ATSEvaluation,
+        system_instruction=system_prompt,
+        temperature=temperature,
+        model=model,
+    )
+
+    return result
+
+
+async def evaluate_resume_against_job_post_async(
+    *,
+    resume_text: dict,
+    job_post: dict,
+    temperature: float = 0.2,
+    model: str = "gemini-2.5-flash",
+) -> Dict[str, Any]:
+    """Async wrapper for ATS evaluation."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: evaluate_resume_against_job_post(
+            resume_text=resume_text,
+            job_post=job_post,
+            temperature=temperature,
+            model=model,
+        ),
     )

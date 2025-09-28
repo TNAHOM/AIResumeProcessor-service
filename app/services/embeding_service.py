@@ -15,6 +15,7 @@ logger.setLevel(logging.INFO)
 class EmbeddingTaskType(str, Enum):
     RETRIEVAL_QUERY = "RETRIEVAL_QUERY"
     RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
+    SEMANTIC_SIMILARITY = "SEMANTIC_SIMILARITY"
 
 
 class TitleType(str, Enum):
@@ -27,7 +28,7 @@ class TitleType(str, Enum):
 def create_embedding(
     json_contents,
     task_type: EmbeddingTaskType,
-    title: TitleType,
+    title: TitleType | str,
 ):
 
     client = genai.Client()
@@ -46,7 +47,7 @@ def create_embedding(
             config=types.EmbedContentConfig(
                 output_dimensionality=3072,
                 task_type=task_type.value,
-                title=title.value,
+                title=title.value if isinstance(title, TitleType) else str(title),
             ),
         )
 

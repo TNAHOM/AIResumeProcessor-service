@@ -1,17 +1,18 @@
 import enum
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Enum
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql import func
+from typing import Optional
+from sqlalchemy import String, DateTime, JSON, Enum, func, ForeignKey
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
+from pgvector.sqlalchemy import Vector
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 class GUID(TypeDecorator):
-    """Platform-independent GUID type.
-    Ensures uuid.UUID values are bound to the DB as strings (avoids character varying = uuid errors).
-    """
+    """Platform-independent GUID type stored as string."""
 
     impl = String(36)
     cache_ok = True
@@ -40,19 +41,53 @@ class ApplicationStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
+class SeniorityLevel(str, enum.Enum):
+    INTERN = "INTERN"
+    JUNIOR = "JUNIOR"
+    MID = "MID"
+    SENIOR = "SENIOR"
+
+
 class Application(Base):
     __tablename__ = "applications"
 
-    id: str = Column(
-        GUID(), primary_key=True, index=True, default=lambda: str(uuid.uuid4())
-    )  # type: ignore
-    original_filename: str = Column(String, nullable=False)  # type: ignore
-    s3_path: str = Column(String, unique=True, index=True, nullable=True)  # type: ignore
-    status: ApplicationStatus = Column(
+    id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), primary_key=True, index=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False)
+
+    job_post_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID(), nullable=True)
+
+    original_filename: Mapped[str] = mapped_column(String, nullable=False)
+    s3_path: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True)
+
+    status: Mapped[ApplicationStatus] = mapped_column(
         Enum(ApplicationStatus), default=ApplicationStatus.PENDING, nullable=False
-    )  # type: ignore
-    failed_reason: str | None = Column(String, nullable=True)  # type: ignore
-    extracted_data: dict | None = Column(JSON, nullable=True)  # type: ignore
-    embedded_value: list[float] | None = Column(JSON, nullable=True, default={})  # type: ignore
-    created_at: DateTime = Column(DateTime(timezone=True), server_default=func.now())  # type: ignore
-    updated_at: DateTime | None = Column(DateTime(timezone=True), onupdate=func.now())  # type: ignore
+    )
+    seniority_level: Mapped[Optional[SeniorityLevel]] = mapped_column(
+        Enum(SeniorityLevel), nullable=True
+    )
+
+    # this is going to contain a json file {'weakness': [], 'strengths': [], 'score': 8.5}
+    analysis: Mapped[Optional[dict]] = mapped_column(
+        JSON,
+        nullable=True,
+        default={
+            "weakness": [],
+            "strengths": [],
+            "score": None,
+        },
+    )
+
+    failed_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[Optional[DateTime]] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now()
+    )
+
+    extracted_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    embedded_value: Mapped[Optional[list[float]]] = mapped_column(Vector(3072))

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
 from app.db import models
 from app.core.config import settings
+from app.schemas.resume import ResumeUploadForm
 from app.workers.resume_processor import process_resume
 
 
@@ -26,9 +27,18 @@ def upload_to_s3(file: UploadFile, s3_path: str):
 
 
 def create_upload_job(
-    db: Session, file: UploadFile, background_tasks: BackgroundTasks
+    db: Session,
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    form_data: ResumeUploadForm,
 ) -> models.Application:
-    application = models.Application(original_filename=file.filename)
+    application = models.Application(
+        original_filename=file.filename,
+        job_post_id=form_data.job_post_id,
+        name=form_data.candidate_name,
+        email=form_data.candidate_email,
+        seniority_level=form_data.seniority_level,
+    )
     db.add(application)
     db.commit()
     db.refresh(application)
@@ -44,5 +54,5 @@ def create_upload_job(
     application_id = application.id
     if isinstance(application_id, str):
         application_id = uuid.UUID(application_id)
-    background_tasks.add_task(process_resume, application_id)
+    background_tasks.add_task(process_resume, application_id, form_data.job_post_id)
     return application

@@ -76,6 +76,38 @@ GEMINI_API_KEY=sk-xxx
 
 	uvicorn app.main:app --reload
 
+## Alembic (migrations) — guideline when `alembic.ini` is gitignored
+
+If you plan to gitignore `alembic.ini` (common when different developers/CI systems have different DB URLs), here is a recommended local workflow to manage migrations:
+
+1. Install Alembic if you don't have it:
+
+	pip install alembic
+
+2. Initialize a local Alembic environment (first time only). Run this in the project root. This creates a new folder and local `alembic.ini`:
+
+	alembic init
+
+3. Configure Alembic to use the application's settings. Edit `migra/env.py` and set the sqlalchemy.url from the app settings (recommended):
+
+	from app.core.config import settings
+	config.set_main_option('sqlalchemy.url', settings.settings.DB_URL)
+
+4. Generate a migration after changing models:
+
+	alembic -c alembic_local/alembic.ini revision --autogenerate -m "describe change"
+
+5. Apply migrations:
+
+	alembic -c alembic.ini upgrade head
+
+6. Commit the generated migration file(s) from `migrations/versions/` (or your `alembic_local/versions/`) to the repository so other developers and CI can apply the same history. Even when `alembic.ini` is local and ignored, migration scripts should be version-controlled.
+
+Notes:
+
+- You can call Alembic with `-x` or environment variables if you prefer to pass the DB URL at runtime. Example: `alembic -c alembic_local/alembic.ini -x db_url=%DB_URL% upgrade head` (you'd need to adapt `env.py` to read `context.get_x_argument()`)
+- Keep `migrations/versions/` committed — the migration scripts are what matter for repo reproducibility.
+
 ## Testing / Smoke test
 
 - Start the API
@@ -84,5 +116,11 @@ GEMINI_API_KEY=sk-xxx
 ## Design & rationale
 
 - Python was chosen for this microservice because the AI/ML integrations (Gemini, embeddings, and various SDKs) are often simpler to implement and maintain in Python. The rest of the ATS is in Go for performance-critical services.
+
+
+## Contribution
+
+- When changing models, create a new Alembic revision and commit the generated migration file(s) into `migrations/versions/`.
+- Keep secrets out of the repo. Use environment variables or your team's secret manager.
 
 ---
