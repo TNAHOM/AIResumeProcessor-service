@@ -5,4 +5,4 @@
 .env
 scripts/
 alembic.ini
-migrations/
+migrations/.env
