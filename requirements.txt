@@ -9,3 +9,7 @@ google-generativeai
 pydantic_settings
 pgvector
 alembic
+redis
+celery
+asyncpg
+aioboto3
