@@ -9,3 +9,6 @@ google-generativeai
 pydantic_settings
 pgvector
 alembic
+celery[redis]
+redis
+aioboto3

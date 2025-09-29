@@ -1,12 +1,11 @@
 import uuid
 import boto3
-from fastapi import UploadFile, BackgroundTasks, HTTPException
+from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
 from app.db import models
 from app.core.config import settings
 from app.schemas.resume import ResumeUploadForm
-from app.workers.resume_processor import process_resume
 
 
 def upload_to_s3(file: UploadFile, s3_path: str):
@@ -29,9 +28,19 @@ def upload_to_s3(file: UploadFile, s3_path: str):
 def create_upload_job(
     db: Session,
     file: UploadFile,
-    background_tasks: BackgroundTasks,
     form_data: ResumeUploadForm,
 ) -> models.Application:
+    """
+    Create upload job using Celery instead of FastAPI BackgroundTasks.
+    
+    Args:
+        db: Database session
+        file: Uploaded file
+        form_data: Form data for the resume upload
+        
+    Returns:
+        Application: The created application record
+    """
     application = models.Application(
         original_filename=file.filename,
         job_post_id=form_data.job_post_id,
@@ -50,9 +59,15 @@ def create_upload_job(
     application.status = models.ApplicationStatus.QUEUED
     db.commit()
 
+    # Import here to avoid circular imports
+    from app.workers.celery_tasks import process_resume_task
+    
     # Ensure application.id is a UUID when passing to process_resume
     application_id = application.id
     if isinstance(application_id, str):
         application_id = uuid.UUID(application_id)
-    background_tasks.add_task(process_resume, application_id, form_data.job_post_id)
+    
+    # Enqueue the task to Celery instead of using BackgroundTasks
+    process_resume_task.delay(str(application_id), str(form_data.job_post_id))
+    
     return application
