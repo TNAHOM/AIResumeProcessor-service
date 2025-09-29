@@ -5,8 +5,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from dotenv import load_dotenv
 from app.schemas.gemini_output import ResumeOutput
 from app.core.config import settings
@@ -40,7 +39,7 @@ def generate_json_with_gemini(
     response_schema: Type[Any],
     system_instruction: Optional[str] = None,
     temperature: float = 0.2,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-1.5-flash",
 ) -> Dict[str, Any]:
     """Generic helper to call Gemini and return a JSON-like dict conforming to response_schema.
 
@@ -58,40 +57,45 @@ def generate_json_with_gemini(
         logger.error("GEMINI_API_KEY not set in environment")
         raise ValueError("GEMINI_API_KEY environment variable not set.")
 
-    client = genai.Client()
+    # Configure the API key
+    genai.configure(api_key=GEMINI_API_KEY)
 
     response = None
     try:
         logger.info("Calling Gemini model=%s with typed response", model)
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                response_schema=response_schema,
+        
+        # Create the model
+        model_instance = genai.GenerativeModel(
+            model_name=model,
+            system_instruction=system_instruction,
+            generation_config=genai.types.GenerationConfig(
                 temperature=temperature,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                response_mime_type="application/json",
             ),
         )
+        
+        response = model_instance.generate_content(prompt)
+        
+        if response and response.text:
+            # Parse the JSON response
+            json_result = json.loads(response.text)
+            logger.info("Successfully parsed JSON response from Gemini")
+            return json_result
+        else:
+            logger.warning("Empty response from Gemini")
+            return {"error": "Empty response from Gemini"}
 
-        if hasattr(response, "parsed") and response.parsed is not None:
-            parsed = response.parsed
-            # Convert Pydantic (v2) model to dict when possible
-            if hasattr(parsed, "model_dump"):
-                return parsed.model_dump()  # type: ignore[no-any-return]
-            if hasattr(parsed, "dict"):
-                return parsed.dict()  # type: ignore[no-any-return]
-            return parsed  # type: ignore[no-any-return]
-
-        # Fallback to raw JSON parse
-        return json.loads(getattr(response, "text", "{}"))
-
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse JSON from Gemini response: %s", e)
+        raw_response = response.text if response else "N/A"
+        return {
+            "error": "Invalid JSON response from Gemini",
+            "details": str(e),
+            "raw_response": raw_response,
+        }
     except Exception as e:
         logger.exception("Gemini call failed")
-        raw_response = (
-            getattr(response, "text", "N/A") if response is not None else "N/A"
-        )
+        raw_response = response.text if response else "N/A"
         return {
             "error": "Gemini call failed",
             "details": str(e),
@@ -214,7 +218,7 @@ def evaluate_resume_against_job_post(
     resume_text: dict,
     job_post: dict,
     temperature: float = 0.2,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-1.5-flash",
 ) -> Dict[str, Any]:
     """Use Gemini to generate ATS-style strengths and weaknesses, given resume and JD text.
 
@@ -261,7 +265,7 @@ async def evaluate_resume_against_job_post_async(
     resume_text: dict,
     job_post: dict,
     temperature: float = 0.2,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-1.5-flash",
 ) -> Dict[str, Any]:
     """Async wrapper for ATS evaluation."""
     import asyncio
