@@ -12,3 +12,4 @@ alembic
 celery[redis]
 redis
 aioboto3
+python-multipart
