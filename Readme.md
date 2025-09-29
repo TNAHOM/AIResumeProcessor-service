@@ -49,11 +49,54 @@ The service loads settings via `app/core/config.py` using Pydantic's settings fe
 Example `.env` (local development):
 
 DB_URL=postgresql://postgres:password@localhost:5432/resume_db
+ASYNC_DB_URL=postgresql+asyncpg://postgres:password@localhost:5432/resume_db
 AWS_ACCESS_KEY_ID=AKIA...
 AWS_SECRET_ACCESS_KEY=...
 AWS_DEFAULT_REGION=us-east-1
 AWS_S3_BUCKET_NAME=my-resume-bucket
 GEMINI_API_KEY=sk-xxx
+REDIS_URL=redis://localhost:6379/0
+
+## 🚀 Quick Start with Docker (Recommended)
+
+For the easiest setup with Redis and PostgreSQL:
+
+1. **Start services**:
+   ```bash
+   docker-compose up -d
+   ```
+
+2. **Setup Python environment**:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment**:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your AWS and Gemini credentials
+   ```
+
+4. **Run database migrations**:
+   ```bash
+   alembic upgrade head
+   ```
+
+5. **Start the application**:
+   ```bash
+   # Terminal 1: API Server
+   uvicorn app.main:app --reload
+   
+   # Terminal 2: Worker Process  
+   python worker.py
+   ```
+
+6. **Test the API**:
+   - Visit: http://localhost:8000/docs
+   - Upload a resume via POST /resumes/upload
+   - Check status via GET /resumes/{application_id}
 
 ## Setup (Windows - cmd.exe)
 
