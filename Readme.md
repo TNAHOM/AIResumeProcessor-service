@@ -9,27 +9,35 @@ The service exposes a FastAPI HTTP API to upload resumes (PDF). Uploaded resumes
 - Framework: FastAPI
 - DB: SQLAlchemy (models in `app/db/models.py`)
 - Migrations: Alembic (migration scripts live in `migrations/`)
-- Background processing: a worker in `app/workers/` performs Textract -> grouping -> Gemini -> embedding -> save flow
+- Background processing: **Redis-powered Celery workers** perform Textract -> grouping -> Gemini -> embedding -> save flow
+- Job queue: **Redis** with **Celery** for scalable async processing
 
 ## Folder structure
 
 Top-level files and folders (high-level view):
 
 - `alembic.ini` - Alembic configuration (may be gitignored in your workflow)
+- `docker-compose.yml` - Docker setup for Redis, PostgreSQL, and Celery workers
+- `Dockerfile` - Container image for the application
+- `worker.py` - Celery worker startup script
 - `Readme.md` - This document
 - `requirements.txt` - Python dependencies
 - `app/`
   - `main.py` - FastAPI app entrypoint and health-check
-  - `core/config.py` - configuration using Pydantic settings (env vars listed below)
+  - `core/`
+    - `config.py` - configuration using Pydantic settings (env vars listed below)
+    - `celery_app.py` - Celery app configuration
   - `db/`
-	- `models.py` - SQLAlchemy models (Application model, custom GUID type)
+	- `models.py` - SQLAlchemy models (Application model, custom GUID type, optimized indexes)
 	- `session.py` - SQLAlchemy engine/session factory
   - `routers/`
-	- `resumes.py` - `/resumes` endpoints (upload and status)
+	- `resumes.py` - `/resumes` endpoints (upload and status) - **now uses Celery**
   - `schemas/` - Pydantic request/response schemas
   - `services/` - Business logic, Gemini and embedding integrations, Textract grouping
-  - `workers/` - Background worker that performs the pipeline for an application
-- `migrations/` - Alembic migration scripts (versioned)
+  - `workers/` 
+    - `resume_processor.py` - **Async** background worker that performs the pipeline for an application
+    - `celery_tasks.py` - Celery task definitions
+- `migrations/` - Alembic migration scripts (versioned) - **includes performance indexes**
 - `scripts/` - helper scripts (Textract helpers, embedding scripts, formatting, experiments)
 - `files/`, `result/`, `airesult/` - sample input PDFs and example outputs
 
@@ -45,6 +53,7 @@ The service loads settings via `app/core/config.py` using Pydantic's settings fe
 - AWS_DEFAULT_REGION - AWS region (e.g., `us-east-1`)
 - AWS_S3_BUCKET_NAME - S3 bucket name used for Textract input
 - GEMINI_API_KEY - API key / token for Gemini
+- **REDIS_URL** - Redis URL for job queue, e.g. `redis://localhost:6379/0`
 
 Example `.env` (local development):
 
@@ -54,27 +63,110 @@ AWS_SECRET_ACCESS_KEY=...
 AWS_DEFAULT_REGION=us-east-1
 AWS_S3_BUCKET_NAME=my-resume-bucket
 GEMINI_API_KEY=sk-xxx
+REDIS_URL=redis://localhost:6379/0
 
-## Setup (Windows - cmd.exe)
+## Setup Options
 
-1. Create and activate a virtual environment
+### Option 1: Docker Development Environment (Recommended)
 
-	python -m venv .venv
-	.venv\Scripts\activate
+The easiest way to get started is using Docker Compose, which provides Redis, PostgreSQL, and Celery workers:
 
-2. Install dependencies
+1. **Copy environment template**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your actual AWS and Gemini credentials
+   ```
 
-	pip install --upgrade pip
-	pip install -r requirements.txt
+2. **Start services**
+   ```bash
+   # Start Redis and PostgreSQL
+   docker-compose up -d redis postgres
+   
+   # Run migrations (first time only)
+   python -m venv .venv
+   source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+   pip install -r requirements.txt
+   alembic upgrade head
+   
+   # Start the FastAPI application
+   uvicorn app.main:app --reload
+   
+   # In another terminal, start the Celery worker
+   celery -A app.core.celery_app worker --loglevel=info
+   ```
 
-3. Configure environment
+3. **Optional: Monitor jobs with Flower**
+   ```bash
+   docker-compose --profile monitoring up flower
+   # Access at http://localhost:5555
+   ```
 
-	- Create a `.env` file (see example above).
-	- Ensure the database referenced by `DB_URL` is accessible.
+### Option 2: Manual Setup (Windows - cmd.exe)
 
-4. Run the API (development)
+1. **Install and start Redis locally**
+   - Download Redis from https://redis.io/download or use WSL
+   - Start Redis server: `redis-server`
 
-	uvicorn app.main:app --reload
+2. **Create and activate a virtual environment**
+   ```cmd
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
+   ```cmd
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **Configure environment**
+   - Create a `.env` file (see example above).
+   - Ensure the database referenced by `DB_URL` is accessible.
+   - Ensure Redis is running at `REDIS_URL`.
+
+5. **Run database migrations**
+   ```cmd
+   alembic upgrade head
+   ```
+
+6. **Start the FastAPI application**
+   ```cmd
+   uvicorn app.main:app --reload
+   ```
+
+7. **Start the Celery worker** (in a separate terminal)
+   ```cmd
+   .venv\Scripts\activate
+   celery -A app.core.celery_app worker --loglevel=info
+   ```
+
+## Database Indexing and Performance
+
+This version includes optimized database indexes for common query patterns:
+
+- **Individual indexes**: `status`, `job_post_id`, `created_at`, `updated_at`
+- **Composite indexes**: 
+  - `(status, created_at)` - for dashboard queries filtering by status and time
+  - `(job_post_id, status)` - for job-specific application queries
+  - `(email, status)` - for user-specific queries
+
+These indexes significantly improve performance for:
+- Status lookups (`/resumes/{id}` endpoint)
+- Filtering applications by status
+- Time-based queries for reporting
+- Job-specific application listings
+
+## Migration Commands
+
+Run migrations when the database schema changes:
+
+```bash
+# Apply all pending migrations
+alembic upgrade head
+
+# Create a new migration after model changes
+alembic revision --autogenerate -m "Description of changes"
+```
 
 ## Alembic (migrations) — guideline when `alembic.ini` is gitignored
 
