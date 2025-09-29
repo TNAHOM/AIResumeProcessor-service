@@ -5,7 +5,12 @@ pydantic[email]
 python-dotenv
 psycopg2-binary
 boto3
-google-generativeai
+google-genai
 pydantic_settings
 pgvector
 alembic
+redis
+celery
+aioboto3
+asyncpg
+python-multipart
