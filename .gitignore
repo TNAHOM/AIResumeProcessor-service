@@ -3,6 +3,12 @@
 .venv/
 
 .env
-scripts/
+# Allow development scripts but ignore temporary ones
+scripts/temp/
+scripts/experiments/
+# Remove the blanket scripts/ ignore to allow dev_setup.py
+# scripts/
+
+# Keep alembic.ini and migrations in gitignore per project notes
 alembic.ini
 migrations/

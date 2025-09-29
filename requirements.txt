@@ -9,3 +9,13 @@ google-generativeai
 pydantic_settings
 pgvector
 alembic
+scikit-learn
+numpy
+python-multipart
+
+# Development and testing dependencies
+pytest
+pytest-asyncio
+httpx
+pytest-mock
+pytest-cov
