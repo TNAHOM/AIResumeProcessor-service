@@ -1,12 +1,12 @@
 import uuid
 import boto3
-from fastapi import UploadFile, BackgroundTasks, HTTPException
+from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
 from app.db import models
 from app.core.config import settings
 from app.schemas.resume import ResumeUploadForm
-from app.workers.resume_processor import process_resume
+from app.services.job_queue import job_queue
 
 
 def upload_to_s3(file: UploadFile, s3_path: str):
@@ -29,7 +29,6 @@ def upload_to_s3(file: UploadFile, s3_path: str):
 def create_upload_job(
     db: Session,
     file: UploadFile,
-    background_tasks: BackgroundTasks,
     form_data: ResumeUploadForm,
 ) -> models.Application:
     application = models.Application(
@@ -54,5 +53,12 @@ def create_upload_job(
     application_id = application.id
     if isinstance(application_id, str):
         application_id = uuid.UUID(application_id)
-    background_tasks.add_task(process_resume, application_id, form_data.job_post_id)
+    
+    # Enqueue job to Redis instead of using BackgroundTasks
+    job_data = {
+        "application_id": str(application_id),
+        "job_post_id": str(form_data.job_post_id)
+    }
+    job_queue.enqueue_job("process_resume", job_data, queue_name="resume_processing")
+    
     return application

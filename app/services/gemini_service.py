@@ -5,8 +5,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from dotenv import load_dotenv
 from app.schemas.gemini_output import ResumeOutput
 from app.core.config import settings
