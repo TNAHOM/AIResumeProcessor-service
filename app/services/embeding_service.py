@@ -1,4 +1,5 @@
 import logging
+import asyncio
 
 from google import genai
 from google.genai import types
@@ -71,3 +72,16 @@ def create_embedding(
     except Exception as exc:
         logger.exception("Failed to create embedding: %s", exc)
         return None
+
+
+async def create_embedding_async(
+    json_contents,
+    task_type: EmbeddingTaskType,
+    title: TitleType | str,
+):
+    """Async wrapper for create_embedding"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: create_embedding(json_contents, task_type, title)
+    )

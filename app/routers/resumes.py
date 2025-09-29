@@ -3,7 +3,6 @@ from fastapi import (
     Depends,
     UploadFile,
     File,
-    BackgroundTasks,
     HTTPException,
 )
 from sqlalchemy.orm import Session
@@ -21,14 +20,14 @@ router = APIRouter(prefix="/resumes", tags=["Resumes"])
 
 @router.post("/upload", response_model=ResumeCreateResponse, status_code=202)
 def upload_resume(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     form_data: ResumeUploadForm = Depends(ResumeUploadForm.as_form),
     db: Session = Depends(get_db),
 ):
-    application = resume_service.create_upload_job(
-        db, file, background_tasks, form_data
-    )
+    """
+    Upload resume and enqueue processing job via Redis queue
+    """
+    application = resume_service.create_upload_job(db, file, form_data)
     return {
         "application_id": application.id,
         "status": application.status,
