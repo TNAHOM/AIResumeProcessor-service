@@ -1,7 +1,7 @@
 import enum
 import uuid
 from typing import Optional
-from sqlalchemy import String, DateTime, JSON, Enum, func, ForeignKey
+from sqlalchemy import String, DateTime, JSON, Enum, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 from pgvector.sqlalchemy import Vector
