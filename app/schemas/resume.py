@@ -10,7 +10,7 @@ from fastapi import Form
 class ResumeCreateResponse(BaseModel):
     application_id: uuid.UUID
     job_post_id: uuid.UUID
-    seniority_level: str
+    seniority_level: Optional[str]
     status: ApplicationStatus
     message: str
 
@@ -31,7 +31,7 @@ class ResumeStatusResponse(BaseModel):
 
 class ResumeUploadForm(BaseModel):
     job_post_id: uuid.UUID
-    seniority_level: str
+    seniority_level: Optional[str]
     candidate_name: str
     candidate_email: str
     candidate_phone: str
@@ -40,7 +40,7 @@ class ResumeUploadForm(BaseModel):
     def as_form(
         cls,
         job_post_id: uuid.UUID = Form(...),
-        seniority_level: str = Form(...),
+        seniority_level: Optional[str] = Form(...),
         candidate_name: str = Form(...),
         candidate_email: str = Form(...),
         candidate_phone: str = Form(...),

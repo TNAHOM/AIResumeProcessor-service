@@ -143,14 +143,14 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
         logging.info("Fetching job post embedding for job_post_id %s...", job_post_id)
         try:
             job_post = get_job_post_by_id(db, job_post_id)
-            if (
-                not job_post
-                or (
+
+            if not job_post or not all(
+                key in job_post
+                for key in (
                     "description_embedding",
                     "requirements_embedding",
                     "responsibilities_embedding",
                 )
-                not in job_post
             ):
                 raise ValueError("Job post or its embeddings not found")
 
@@ -230,7 +230,7 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
         try:
             embeddingValue = create_embedding(
                 json_contents=final_data,
-                task_type=EmbeddingTaskType.SEMANTIC_SIMILARITY,
+                task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT,
                 title=TitleType.APPLICANT_RESUME,
             )
         except Exception as e:
@@ -247,6 +247,15 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             "Calculating similarity score for application %s...", application_id
         )
         try:
+            if isinstance(job_description_embeded_value, str):
+                job_description_embeded_value = json.loads(
+                    job_description_embeded_value
+                )
+            if isinstance(job_requirements, str):
+                job_requirements = json.loads(job_requirements)
+            if isinstance(responsibilities_embedding, str):
+                responsibilities_embedding = json.loads(responsibilities_embedding)
+
             description_similarity = similarity_search(
                 resumeData=embeddingValue, jobPostData=job_description_embeded_value
             )

@@ -26,11 +26,14 @@ def upload_resume(
     form_data: ResumeUploadForm = Depends(ResumeUploadForm.as_form),
     db: Session = Depends(get_db),
 ):
+
     application = resume_service.create_upload_job(
         db, file, background_tasks, form_data
     )
     return {
         "application_id": application.id,
+        "job_post_id": form_data.job_post_id,
+        "seniority_level": form_data.seniority_level,
         "status": application.status,
         "message": "Resume accepted and is being processed in the background.",
     }
