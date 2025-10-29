@@ -1,6 +1,3 @@
-import time
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.orm import Session
 import json
 import logging
@@ -11,7 +8,8 @@ from app.db.session import SessionLocal
 from app.db.models import Application, ApplicationStatus
 from app.core.config import settings
 from app.services.embeding_service import EmbeddingTaskType, TitleType
-from app.services.job_post_service import get_job_post_by_id
+from app.services.job_post_service import get_job_post_by_id, increment_job_post_applicant_count
+from app.services.parsing_service import TextractService
 from app.services.similarity_search import calculate_score, similarity_search
 from app.services.textract_grouper import grouping
 from app.services.gemini_service import (
@@ -32,86 +30,161 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-class TextractService:
-    def __init__(self):
-        self.client = boto3.client(
-            "textract",
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_DEFAULT_REGION,
+def _fetch_application(db: Session, application_id: uuid.UUID) -> Optional[Application]:
+    app = db.query(Application).filter(Application.id == application_id).first()
+    if app is None:
+        logger.warning("No application found with id %s", application_id)
+        return None
+
+    if app.status == ApplicationStatus.COMPLETED:
+        logger.info(
+            "Application %s already completed; skipping processing", application_id
+        )
+        return None
+
+    return app
+
+
+def _fetch_job_post_embeddings(db: Session, job_post_id: uuid.UUID):
+    job_post = get_job_post_by_id(db, job_post_id)
+
+    if not job_post or not all(
+        key in job_post
+        for key in (
+            "description_embedding",
+            "requirements_embedding",
+            "responsibilities_embedding",
+        )
+    ):
+        raise ValueError("Job post or its embeddings not found")
+
+    return (
+        job_post,
+        job_post["description_embedding"],
+        job_post["requirements_embedding"],
+        job_post["responsibilities_embedding"],
+    )
+
+
+def _start_textract_job(textract: TextractService, app: Application) -> str:
+    if not app.s3_path:
+        logger.error("S3 path is None for application %s", app.id)
+        raise ValueError("S3 path is missing for this application")
+
+    return textract.start_job(settings.AWS_S3_BUCKET_NAME, app.s3_path)
+
+
+def _get_textract_blocks(textract: TextractService, job_id: str):
+    raw_blocks = textract.get_job_results(job_id)
+    logger.info("Textract job succeeded. Got %d blocks.", len(raw_blocks))
+    return raw_blocks
+
+
+def _group_textract_results(raw_blocks, application_id: uuid.UUID):
+    logger.info("Grouping Textract data for application %s...", application_id)
+    grouped_data = grouping(raw_blocks)
+    logger.info("Grouping complete.")
+    return grouped_data
+
+
+def _normalize_resume(grouped_data):
+    return structure_and_normalize_resume_with_gemini(grouped_data)
+
+
+def _create_resume_embedding(final_data):
+    return create_embedding(
+        json_contents=final_data,
+        task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT,
+        title=TitleType.APPLICANT_RESUME,
+    )
+
+
+def _compute_similarities(
+    embedding_value,
+    final_data,
+    job_post,
+    job_description_embedding,
+    job_requirements,
+    responsibilities_embedding,
+):
+    if isinstance(job_description_embedding, str):
+        job_description_embedding = json.loads(job_description_embedding)
+    if isinstance(job_requirements, str):
+        job_requirements = json.loads(job_requirements)
+    if isinstance(responsibilities_embedding, str):
+        responsibilities_embedding = json.loads(responsibilities_embedding)
+
+    description_similarity = similarity_search(
+        resumeData=embedding_value, jobPostData=job_description_embedding
+    )
+    requirements_similarity = similarity_search(
+        resumeData=embedding_value, jobPostData=job_requirements
+    )
+    responsibilities_similarity = similarity_search(
+        resumeData=embedding_value, jobPostData=responsibilities_embedding
+    )
+
+    ai_analysis = evaluate_resume_against_job_post(
+        resume_text=final_data,
+        job_post=job_post,
+    )
+
+    if not isinstance(ai_analysis, dict):
+        raise ValueError("AI analysis result must be a dictionary")
+
+    calculate_score(
+        description=description_similarity,
+        requirement=requirements_similarity,
+        responsibility=responsibilities_similarity,
+        ai_score=ai_analysis.get("score", 1),
+        penality=0,
+    )
+
+    return ai_analysis
+
+
+def _finalize_success(
+    db: Session,
+    app: Application,
+    final_data,
+    embedding_value,
+    ai_analysis,
+):
+    app.extracted_data = final_data
+    app.embedded_value = embedding_value
+    app.analysis = ai_analysis
+    app.status = ApplicationStatus.COMPLETED
+    db.commit()
+
+
+def _finalize_failure(
+    db: Optional[Session],
+    app: Optional[Application],
+    application_id: uuid.UUID,
+    error: Exception,
+):
+    try:
+        if db is None:
+            db = SessionLocal()
+
+        if app is None:
+            app = db.query(Application).filter(Application.id == application_id).first()
+
+        if app and app.status != ApplicationStatus.COMPLETED:
+            app.status = ApplicationStatus.FAILED
+            reason = getattr(app, "failed_reason", None) or ""
+            try:
+                err_text = json.dumps({"error": str(error)})
+            except Exception:
+                err_text = str(error)
+            app.failed_reason = f"{reason}\n{err_text}" if reason else err_text
+            db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to mark application as FAILED in DB for %s", application_id
         )
 
-    def start_job(self, bucket_name: str, object_key: str):
-        try:
-            response = self.client.start_document_analysis(
-                DocumentLocation={
-                    "S3Object": {"Bucket": bucket_name, "Name": object_key}
-                },
-                FeatureTypes=["LAYOUT", "FORMS"],
-            )
-            job_id = response.get("JobId")
-            if not job_id:
-                logger.error(
-                    "Textract start_document_analysis returned no JobId: %s", response
-                )
-                raise RuntimeError("Textract did not return a job id")
-            return job_id
-        except (BotoCoreError, ClientError):
-            logger.exception("Error starting Textract job")
-            raise
-
-    def get_job_results(self, job_id):
-        attempts = 0
-        max_attempts = 120  # ~10 minutes polling (with 5s sleep)
-        response = None
-        while True:
-            try:
-                response = self.client.get_document_analysis(JobId=job_id)
-            except (BotoCoreError, ClientError):
-                attempts += 1
-                logger.warning(
-                    "Temporary error getting Textract job status (attempt %d)", attempts
-                )
-                if attempts >= 5:
-                    logger.exception("Repeated failures querying Textract")
-                    raise
-                time.sleep(2)
-                continue
-
-            status = response.get("JobStatus")
-            logger.info("Textract Job status: %s", status)
-            if status == "SUCCEEDED":
-                break
-            elif status == "FAILED":
-                msg = response.get("StatusMessage")
-                logger.error("Textract job failed: %s", msg)
-                raise RuntimeError(f"Textract job failed: {msg}")
-
-            max_attempts -= 1
-            if max_attempts <= 0:
-                logger.error(
-                    "Textract job polling exceeded timeout for JobId=%s", job_id
-                )
-                raise TimeoutError("Timed out waiting for Textract job to complete")
-            time.sleep(5)
-
-        results = []
-        pages = [response]
-        while response and response.get("NextToken"):
-            try:
-                time.sleep(0.2)
-                response = self.client.get_document_analysis(
-                    JobId=job_id, NextToken=response.get("NextToken")
-                )
-                pages.append(response)
-            except (BotoCoreError, ClientError):
-                logger.exception("Failed to fetch additional Textract pages")
-                break
-
-        for page in pages:
-            blocks = page.get("Blocks") or []
-            results.extend(blocks)
-        return results
+    return db, app
 
 
 def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
@@ -124,16 +197,8 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
     app: Optional[Application] = None
     try:
         db = SessionLocal()
-        app = db.query(Application).filter(Application.id == application_id).first()
+        app = _fetch_application(db, application_id)
         if app is None:
-            logger.warning("No application found with id %s", application_id)
-            return
-
-        # Avoid clobbering COMPLETED state if re-processing was attempted
-        if app.status == ApplicationStatus.COMPLETED:
-            logger.info(
-                "Application %s already completed; skipping processing", application_id
-            )
             return
 
         app.status = ApplicationStatus.PROCESSING
@@ -142,21 +207,12 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
         # Step 1: Get the job Post embeded values
         logging.info("Fetching job post embedding for job_post_id %s...", job_post_id)
         try:
-            job_post = get_job_post_by_id(db, job_post_id)
-
-            if not job_post or not all(
-                key in job_post
-                for key in (
-                    "description_embedding",
-                    "requirements_embedding",
-                    "responsibilities_embedding",
-                )
-            ):
-                raise ValueError("Job post or its embeddings not found")
-
-            job_description_embeded_value = job_post["description_embedding"]
-            job_requirements = job_post["requirements_embedding"]
-            responsibilities_embedding = job_post["responsibilities_embedding"]
+            (
+                job_post,
+                job_description_embeded_value,
+                job_requirements,
+                responsibilities_embedding,
+            ) = _fetch_job_post_embeddings(db, job_post_id)
         except Exception as e:
             logger.exception("Failed to fetch job post with id %s", job_post_id)
             app.failed_reason = f"Failed to fetch job post: {str(e)}"
@@ -165,16 +221,9 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             raise
 
         # Step 2: Call Textract with retries for transient failures
-        textract = TextractService()
         try:
-            if not app.s3_path:
-                app.failed_reason = "S3 path is missing for this application"
-                app.status = ApplicationStatus.FAILED
-                db.commit()
-                logger.error("S3 path is None for application %s", application_id)
-                raise ValueError("S3 path is missing for this application")
-
-            job_id = textract.start_job(settings.AWS_S3_BUCKET_NAME, app.s3_path)
+            textract = TextractService()
+            job_id = _start_textract_job(textract, app)
             logger.info(
                 "Textract job started: JobId=%s for s3_path=%s", job_id, app.s3_path
             )
@@ -187,13 +236,11 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             db.commit()
             raise
 
-        raw_blocks = textract.get_job_results(job_id)
-        logger.info("Textract job succeeded. Got %d blocks.", len(raw_blocks))
+        raw_blocks = _get_textract_blocks(textract, job_id)
 
         # Step 3: Group Textract results
-        logger.info("Grouping Textract data for application %s...", application_id)
         try:
-            grouped_data = grouping(raw_blocks)
+            grouped_data = _group_textract_results(raw_blocks, application_id)
         except Exception as e:
             logger.exception(
                 "Grouping of Textract results failed for application %s", application_id
@@ -202,14 +249,13 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             app.status = ApplicationStatus.FAILED
             db.commit()
             raise
-        logger.info("Grouping complete.")
 
         # Step 4: Call the advanced Gemini service for final processing
         logger.info(
             "Sending to Gemini for normalization and extraction for application %s...",
             application_id,
         )
-        final_data = structure_and_normalize_resume_with_gemini(grouped_data)
+        final_data = _normalize_resume(grouped_data)
 
         # Robust check for errors from the Gemini service
         if isinstance(final_data, dict) and final_data.get("error"):
@@ -228,11 +274,7 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
         # Step 5: Embed the structured data
         logger.info("Creating embedding for application %s...", application_id)
         try:
-            embeddingValue = create_embedding(
-                json_contents=final_data,
-                task_type=EmbeddingTaskType.RETRIEVAL_DOCUMENT,
-                title=TitleType.APPLICANT_RESUME,
-            )
+            embeddingValue = _create_resume_embedding(final_data)
         except Exception as e:
             logger.exception(
                 "Embedding creation failed for application %s", application_id
@@ -247,35 +289,13 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             "Calculating similarity score for application %s...", application_id
         )
         try:
-            if isinstance(job_description_embeded_value, str):
-                job_description_embeded_value = json.loads(
-                    job_description_embeded_value
-                )
-            if isinstance(job_requirements, str):
-                job_requirements = json.loads(job_requirements)
-            if isinstance(responsibilities_embedding, str):
-                responsibilities_embedding = json.loads(responsibilities_embedding)
-
-            description_similarity = similarity_search(
-                resumeData=embeddingValue, jobPostData=job_description_embeded_value
-            )
-            requirements_similarity = similarity_search(
-                resumeData=embeddingValue, jobPostData=job_requirements
-            )
-            responsibilities_similarity = similarity_search(
-                resumeData=embeddingValue, jobPostData=responsibilities_embedding
-            )
-
-            ai_analysis = evaluate_resume_against_job_post(
-                resume_text=final_data, job_post=job_post
-            )
-
-            calculate_score(
-                description=description_similarity,
-                requirement=requirements_similarity,
-                responsibility=responsibilities_similarity,
-                ai_score=ai_analysis.get("score", 1),
-                penality=0,
+            ai_analysis = _compute_similarities(
+                embedding_value=embeddingValue,
+                final_data=final_data,
+                job_post=job_post,
+                job_description_embedding=job_description_embeded_value,
+                job_requirements=job_requirements,
+                responsibilities_embedding=responsibilities_embedding,
             )
         except Exception as e:
             logger.exception(
@@ -286,12 +306,11 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             db.commit()
             raise
 
+        # Step 7: add number of applicant in the field of job post
+        increment_job_post_applicant_count(db, job_post_id)
+    
         # Final Step: Save the result to the database
-        app.extracted_data = final_data
-        app.embedded_value = embeddingValue
-        app.analysis = ai_analysis
-        app.status = ApplicationStatus.COMPLETED
-        db.commit()
+        _finalize_success(db, app, final_data, embeddingValue, ai_analysis)
         logger.info("Application %s fully completed and saved to DB.", application_id)
 
     except Exception as e:
@@ -300,29 +319,7 @@ def process_resume(application_id: uuid.UUID, job_post_id: uuid.UUID):
             application_id,
             e,
         )
-        try:
-            if db is None:
-                db = SessionLocal()
-            if app is None:
-                app = (
-                    db.query(Application)
-                    .filter(Application.id == application_id)
-                    .first()
-                )
-            if app and app.status != ApplicationStatus.COMPLETED:
-                app.status = ApplicationStatus.FAILED
-                # Append error details to failed_reason for debugging
-                reason = getattr(app, "failed_reason", None) or ""
-                try:
-                    err_text = json.dumps({"error": str(e)})
-                except Exception:
-                    err_text = str(e)
-                app.failed_reason = f"{reason}\n{err_text}" if reason else err_text
-                db.commit()
-        except Exception:
-            logger.exception(
-                "Failed to mark application as FAILED in DB for %s", application_id
-            )
+        db, app = _finalize_failure(db, app, application_id, e)
     finally:
         if db:
             db.close()

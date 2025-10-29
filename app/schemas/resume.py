@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 import uuid
-from app.db.models import ApplicationStatus
+from app.db.models import ApplicationStatus, ProgressStatus
 from fastapi import Form
 
 
@@ -19,6 +19,8 @@ class ResumeStatusResponse(BaseModel):
     id: uuid.UUID
     original_filename: str
     status: ApplicationStatus
+    progress_status: ProgressStatus
+    seniority_level: Optional[str] = None
     s3_path: Optional[str] = None
     extracted_data: Optional[Dict[str, Any]] = None
     # embedded_value: list[float] | None = None

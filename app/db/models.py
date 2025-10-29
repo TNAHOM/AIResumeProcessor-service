@@ -46,6 +46,13 @@ class SeniorityLevel(str, enum.Enum):
     JUNIOR = "JUNIOR"
     MID = "MID"
     SENIOR = "SENIOR"
+    
+class ProgressStatus(str, enum.Enum):
+    APPLIED = "APPLIED"
+    SHORTLISTED = "SHORTLISTED"
+    INTERVIEWING = "INTERVIEWING"
+    REJECTED = "REJECTED"
+    HIRED = "HIRED"
 
 
 class Application(Base):
@@ -68,6 +75,7 @@ class Application(Base):
     seniority_level: Mapped[Optional[SeniorityLevel]] = mapped_column(
         Enum(SeniorityLevel), nullable=True
     )
+    progress_status: Mapped[Optional[ProgressStatus]] = mapped_column(Enum(ProgressStatus), default=ProgressStatus.APPLIED, nullable=False)
 
     # this is going to contain a json file {'weakness': [], 'strengths': [], 'score': 8.5}
     analysis: Mapped[Optional[dict]] = mapped_column(

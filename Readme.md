@@ -22,10 +22,10 @@ Top-level files and folders (high-level view):
   - `main.py` - FastAPI app entrypoint and health-check
   - `core/config.py` - configuration using Pydantic settings (env vars listed below)
   - `db/`
-	- `models.py` - SQLAlchemy models (Application model, custom GUID type)
-	- `session.py` - SQLAlchemy engine/session factory
+  - `models.py` - SQLAlchemy models (Application model, custom GUID type)
+  - `session.py` - SQLAlchemy engine/session factory
   - `routers/`
-	- `resumes.py` - `/resumes` endpoints (upload and status)
+  - `resumes.py` - `/resumes` endpoints (upload and status)
   - `schemas/` - Pydantic request/response schemas
   - `services/` - Business logic, Gemini and embedding integrations, Textract grouping
   - `workers/` - Background worker that performs the pipeline for an application
@@ -59,22 +59,22 @@ GEMINI_API_KEY=sk-xxx
 
 1. Create and activate a virtual environment
 
-	python -m venv .venv
-	.venv\Scripts\activate
+   python -m venv .venv
+   .venv\Scripts\activate
 
 2. Install dependencies
 
-	pip install --upgrade pip
-	pip install -r requirements.txt
+   pip install --upgrade pip
+   pip install -r requirements.txt
 
 3. Configure environment
 
-	- Create a `.env` file (see example above).
-	- Ensure the database referenced by `DB_URL` is accessible.
+   - Create a `.env` file (see example above).
+   - Ensure the database referenced by `DB_URL` is accessible.
 
 4. Run the API (development)
 
-	uvicorn app.main:app --reload
+   uvicorn app.main:app --reload
 
 ## Alembic (migrations) — guideline when `alembic.ini` is gitignored
 
@@ -82,24 +82,24 @@ If you plan to gitignore `alembic.ini` (common when different developers/CI syst
 
 1. Install Alembic if you don't have it:
 
-	pip install alembic
+   pip install alembic
 
 2. Initialize a local Alembic environment (first time only). Run this in the project root. This creates a new folder and local `alembic.ini`:
 
-	alembic init
+   alembic init
 
 3. Configure Alembic to use the application's settings. Edit `migra/env.py` and set the sqlalchemy.url from the app settings (recommended):
 
-	from app.core.config import settings
-	config.set_main_option('sqlalchemy.url', settings.settings.DB_URL)
+   from app.core.config import settings
+   config.set_main_option('sqlalchemy.url', settings.settings.DB_URL)
 
 4. Generate a migration after changing models:
 
-	alembic -c alembic_local/alembic.ini revision --autogenerate -m "describe change"
+   alembic -c alembic_local/alembic.ini revision --autogenerate -m "describe change"
 
 5. Apply migrations:
 
-	alembic -c alembic.ini upgrade head
+   alembic -c alembic.ini upgrade head
 
 6. Commit the generated migration file(s) from `migrations/versions/` (or your `alembic_local/versions/`) to the repository so other developers and CI can apply the same history. Even when `alembic.ini` is local and ignored, migration scripts should be version-controlled.
 
@@ -108,19 +108,13 @@ Notes:
 - You can call Alembic with `-x` or environment variables if you prefer to pass the DB URL at runtime. Example: `alembic -c alembic_local/alembic.ini -x db_url=%DB_URL% upgrade head` (you'd need to adapt `env.py` to read `context.get_x_argument()`)
 - Keep `migrations/versions/` committed — the migration scripts are what matter for repo reproducibility.
 
-## Testing / Smoke test
-
-- Start the API
-- Use `/resumes/upload` in the Swagger UI and upload a sample PDF from `files/` to ensure the upload route accepts files and creates an Application entry in the DB.
-
 ## Design & rationale
 
 - Python was chosen for this microservice because the AI/ML integrations (Gemini, embeddings, and various SDKs) are often simpler to implement and maintain in Python. The rest of the ATS is in Go for performance-critical services.
 
+## Reminder Notes
 
-## Contribution
-
-- When changing models, create a new Alembic revision and commit the generated migration file(s) into `migrations/versions/`.
-- Keep secrets out of the repo. Use environment variables or your team's secret manager.
+- [ ] Implement an email service to send if the applicantion have been recieved or if their is an error to reapply
+- [ ] Add a queueing mechanism possibly using rabbimtMQ or any other service
 
 ---
