@@ -37,6 +37,7 @@ def create_upload_job(
         job_post_id=form_data.job_post_id,
         name=form_data.candidate_name,
         email=form_data.candidate_email,
+        phone_number=form_data.candidate_phone,
         seniority_level=form_data.seniority_level,
     )
     db.add(application)

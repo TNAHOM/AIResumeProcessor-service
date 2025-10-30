@@ -63,8 +63,9 @@ class Application(Base):
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     email: Mapped[str] = mapped_column(String, nullable=False)
+    phone_number: Mapped[str] = mapped_column(String, nullable=False)
 
-    job_post_id: Mapped[Optional[uuid.UUID]] = mapped_column(GUID(), nullable=True)
+    job_post_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
 
     original_filename: Mapped[str] = mapped_column(String, nullable=False)
     s3_path: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True)

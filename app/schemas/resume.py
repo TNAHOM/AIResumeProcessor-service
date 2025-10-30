@@ -21,6 +21,7 @@ class ResumeStatusResponse(BaseModel):
     status: ApplicationStatus
     progress_status: ProgressStatus
     seniority_level: Optional[str] = None
+    phone_number: Optional[str] = None
     s3_path: Optional[str] = None
     extracted_data: Optional[Dict[str, Any]] = None
     # embedded_value: list[float] | None = None
