@@ -8,6 +8,6 @@ app = FastAPI(title="ATS Resume Parser Service")
 app.include_router(resumes.router)
 
 
-@app.get("/", tags=["Health Check"])
+@app.get("/health", tags=["Health Check"])
 def read_root():
     return {"status": "ok"}
