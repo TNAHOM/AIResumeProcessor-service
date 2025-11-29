@@ -1,0 +1,11 @@
+.pyo
+*.pyd
+.env
+*.db
+
+**/__pycache__/
+**/*.pyc
+.venv/
+
+scripts/
+alembic.ini
